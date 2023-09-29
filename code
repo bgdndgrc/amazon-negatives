@@ -1,0 +1,76 @@
+import pandas as pd
+import numpy as np
+import re
+from collections import Counter
+
+def generate_word_summary(input_file_path, output_file_path):
+    # Load the data
+    data = pd.read_excel(input_file_path)
+
+    # Remove rows where 'Spend' is 0
+    data = data[data['Spend'] != 0]
+
+    # Select only the specified columns and include 'Portfolio name'
+    data_subset = data[['Campaign Name', 'Ad Group Name', 'Customer Search Term', 'Match Type', 'Clicks', 'Spend', '7 Day Total Sales ', 'Portfolio name']]
+
+    # Remove rows where 'Customer Search Term' starts with 'b0'
+    data_subset = data_subset[~data_subset['Customer Search Term'].str.startswith('b0')]
+
+    # Remove rows where 'Match Type' is 'exact' or 'EXACT'
+    data_subset = data_subset[~data_subset['Match Type'].isin(['EXACT'])]
+
+    # Split the 'Customer Search Term' into individual words, remove duplicates, and discard words with only special characters
+    unique_words = set()
+    for term in data_subset['Customer Search Term']:
+        words = term.split(' ')
+        valid_words = [word for word in words if re.search(r'[a-zA-Z0-9]', word)]
+        unique_words.update(valid_words)
+
+    # Initialize an empty dataframe for the results
+    columns = ['Word', 'Campaign Name', 'Ad Group Name', 'Portfolio', 'Match Count', 'TotalClicks', 'TotalSpend', 'TotalSales', 'ACOS', 'Portfolios']
+    results_df = pd.DataFrame(columns=columns)
+
+    # Perform the operations for each unique word
+    for word in unique_words:
+        if word:  # skip empty strings
+            # Filter rows where 'Customer Search Term' contains the word
+            filtered_rows = data_subset[data_subset['Customer Search Term'].str.contains(fr'\b{re.escape(word)}\b', regex=True)]
+            portfolio_counts = dict(Counter(filtered_rows['Portfolio name']))
+            
+            for _, row in filtered_rows.iterrows():
+                campaign = row['Campaign Name']
+                ad_group = row['Ad Group Name']
+                portfolio = row['Portfolio name']
+                
+                # Check if this combination is already in the results_df
+                existing_row = results_df[(results_df['Word'] == word) & (results_df['Campaign Name'] == campaign) & (results_df['Ad Group Name'] == ad_group) & (results_df['Portfolio'] == portfolio)]
+                if existing_row.empty:
+                    # Add a new row for this combination
+                    new_data = pd.DataFrame({
+                        'Word': [word],
+                        'Campaign Name': [campaign],
+                        'Ad Group Name': [ad_group],
+                        'Portfolio': [portfolio],
+                        'Match Count': [1],
+                        'TotalClicks': [row['Clicks']],
+                        'TotalSpend': [row['Spend']],
+                        'TotalSales': [row['7 Day Total Sales ']],
+                        'Portfolios': [portfolio_counts]
+                    })
+                    results_df = pd.concat([results_df, new_data], ignore_index=True)
+                else:
+                    # Update the existing row
+                    idx = existing_row.index[0]
+                    results_df.at[idx, 'Match Count'] += 1
+                    results_df.at[idx, 'TotalClicks'] += row['Clicks']
+                    results_df.at[idx, 'TotalSpend'] += row['Spend']
+                    results_df.at[idx, 'TotalSales'] += row['7 Day Total Sales ']
+
+    # Compute ACOS and save it as a percentage
+    results_df['ACOS'] = (results_df['TotalSpend'] / results_df['TotalSales']) * 100
+
+    # Handle potential division by zero
+    results_df['ACOS'] = results_df['ACOS'].replace([np.inf, -np.inf], np.nan)
+
+    # Save the result to an Excel file
+    results_df.to_excel(output_file_path, index=False)
